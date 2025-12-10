@@ -9,6 +9,12 @@ public:
     Window(HINSTANCE hInstance, int nCmdShow);
     ~Window();
 
+    // ? Window.h ????????:
+    void Resize(int width, int height) {
+        this->width = width;
+        this->height = height;
+    }
+
     bool Initialize(const wchar_t* title, int width, int height);
     HWND GetHandle() const { return hWnd; }
     int GetWidth() const { return width; }
