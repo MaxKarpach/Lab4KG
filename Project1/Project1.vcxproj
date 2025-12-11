@@ -182,16 +182,37 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="d3dUtil.h" />
     <ClInclude Include="DirectXApp.h" />
     <ClInclude Include="InputDevice.h" />
     <ClInclude Include="main.h" />
+    <ClInclude Include="MathHelper.h" />
+    <ClInclude Include="ObjectConstants.h" />
+    <ClInclude Include="Timer.h" />
+    <ClInclude Include="UploadBuffer.h" />
+    <ClInclude Include="Vertex.h" />
+    <ClInclude Include="VertexTypes.h" />
     <ClInclude Include="Window.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="d3dUtil.cpp" />
     <ClCompile Include="DirectXApp.cpp" />
     <ClCompile Include="InputDevice.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="MathHelper.cpp" />
+    <ClCompile Include="ObjectConstants.cpp" />
+    <ClCompile Include="Timer.cpp" />
+    <ClCompile Include="UploadBuffer.cpp" />
+    <ClCompile Include="Vertex.cpp" />
+    <ClCompile Include="VertexTypes.cpp" />
     <ClCompile Include="Window.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="shaders.hlsl">
+      <FileType>Document</FileType>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">true</ExcludedFromBuild>
+      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">false</DeploymentContent>
+    </None>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

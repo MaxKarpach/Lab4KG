@@ -1,6 +1,7 @@
 ﻿#include "InputDevice.h"
 
 InputDevice::InputDevice() : mouseX(0), mouseY(0) {
+    // Инициализация кнопок мыши
     mouseButtons[0] = mouseButtons[1] = mouseButtons[2] = false;
 }
 

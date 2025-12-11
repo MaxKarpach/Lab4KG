@@ -1,10 +1,31 @@
 ﻿#include "DirectXApp.h"
 #include <d3d12.h>
 #include <dxgi1_6.h>
+#include <d3dcompiler.h>
 #include <string>
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
+#pragma comment(lib, "d3dcompiler.lib") 
+
+// В начало DirectXApp.cpp после #include
+struct CD3DX12_RESOURCE_BARRIER_HELPER {
+    static D3D12_RESOURCE_BARRIER Transition(
+        _In_ ID3D12Resource* pResource,
+        D3D12_RESOURCE_STATES stateBefore,
+        D3D12_RESOURCE_STATES stateAfter,
+        UINT subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES)
+    {
+        D3D12_RESOURCE_BARRIER barrier = {};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+        barrier.Transition.pResource = pResource;
+        barrier.Transition.StateBefore = stateBefore;
+        barrier.Transition.StateAfter = stateAfter;
+        barrier.Transition.Subresource = subresource;
+        return barrier;
+    }
+};
 
 DirectXApp::DirectXApp(Window& window) : window(window) {}
 
@@ -12,31 +33,371 @@ DirectXApp::~DirectXApp() {
     Shutdown();
 }
 
-void DirectXApp::Shutdown() {
-    // Flush командной очереди перед закрытием
+// =========== Метод для создания Input Layout ===========
+void DirectXApp::BuildInputLayout()
+{
+    // Для Vertex1 (с цветом) - как на слайде с кубом
+    mInputLayout =
+    {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
+          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12,
+          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+    };
+}
+
+#include "d3dUtil.h"  // Добавьте этот include
+
+void DirectXApp::BuildShaders()
+{
+    UINT compileFlags = 0;
+#ifdef _DEBUG
+    compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#endif
+
+    ComPtr<ID3DBlob> errorBlob;
+
+    // 1. ПРОБУЕМ БЕЗ ПАПКИ - ПРЯМО РЯДОМ С .EXE
+    HRESULT hr = D3DCompileFromFile(
+        L"shaders.hlsl",  // Без папки Shaders/
+        nullptr,
+        D3D_COMPILE_STANDARD_FILE_INCLUDE,
+        "VS",
+        "vs_5_0",
+        compileFlags,
+        0,
+        &mvsByteCode,
+        &errorBlob
+    );
+
+    if (FAILED(hr))
+    {
+        // Если не получилось, показываем ошибку
+        std::string errorMsg = "VS Compile Error:\n";
+        if (errorBlob)
+        {
+            errorMsg += (char*)errorBlob->GetBufferPointer();
+        }
+        errorMsg += "\nHRESULT: 0x" + std::to_string(hr);
+
+        MessageBoxA(NULL, errorMsg.c_str(), "Error", MB_OK);
+        return;
+    }
+
+    // 2. ПИКСЕЛЬНЫЙ ШЕЙДЕР (ТОТ ЖЕ ФАЙЛ)
+    hr = D3DCompileFromFile(
+        L"shaders.hlsl",  // Тот же путь
+        nullptr,
+        D3D_COMPILE_STANDARD_FILE_INCLUDE,
+        "PS",
+        "ps_5_0",
+        compileFlags,
+        0,
+        &mpsByteCode,
+        &errorBlob
+    );
+
+    if (FAILED(hr))
+    {
+        std::string errorMsg = "PS Compile Error:\n";
+        if (errorBlob)
+        {
+            errorMsg += (char*)errorBlob->GetBufferPointer();
+        }
+        errorMsg += "\nHRESULT: 0x" + std::to_string(hr);
+
+        MessageBoxA(NULL, errorMsg.c_str(), "Error", MB_OK);
+        return;
+    }
+
+    MessageBox(NULL, L"SUCCESS! Shaders compiled", L"Info", MB_OK);
+}
+// =========== Метод для создания константного буфера ===========
+void DirectXApp::BuildConstantBuffer()
+{
+    // Создаем UploadBuffer для констант (1 элемент)
+    mObjectCB = std::make_unique<UploadBuffer<ObjectConstants>>(
+        device.Get(),  // ID3D12Device
+        1,             // elementCount (1 объект)
+        true           // isConstantBuffer
+    );
+
+    // Инициализируем матрицу (единичная матрица)
+    ObjectConstants objConstants;
+
+    // Создаем простую матрицу проекции (орфографическую)
+    DirectX::XMMATRIX view = DirectX::XMMatrixIdentity();
+    DirectX::XMMATRIX proj = DirectX::XMMatrixOrthographicLH(10.0f, 10.0f, 0.1f, 100.0f);
+    DirectX::XMMATRIX viewProj = view * proj;
+
+    // Копируем в структуру (транспонируем для HLSL)
+    DirectX::XMStoreFloat4x4(&objConstants.mWorldViewProj, XMMatrixTranspose(viewProj));
+
+    // Копируем данные в константный буфер
+    mObjectCB->CopyData(0, objConstants);
+
+    MessageBox(NULL, L"Constant buffer created successfully", L"Info", MB_OK);
+}
+
+// =========== Метод для создания вершинного буфера ===========
+void DirectXApp::BuildVertexBuffer()
+{
+    // УДАЛИ ЭТИ 3 СТРОКИ (они дублируются ниже):
+    // const UINT64 vbByteSize = cubeVertexCount * sizeof(Vertex);
+    // D3D12_HEAP_PROPERTIES defaultHeapProps = {};
+    // defaultHeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    // Размер буфера в байтах (8 вершин * размер Vertex)
+    const UINT64 vbByteSize = cubeVertexCount * sizeof(Vertex);
+
+    // 1. Создаем буфер в DEFAULT куче (для GPU)
+    D3D12_HEAP_PROPERTIES defaultHeapProps = {};
+    defaultHeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+    defaultHeapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    defaultHeapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+    D3D12_RESOURCE_DESC bufferDesc = {};
+    bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufferDesc.Alignment = 0;
+    bufferDesc.Width = vbByteSize;
+    bufferDesc.Height = 1;
+    bufferDesc.DepthOrArraySize = 1;
+    bufferDesc.MipLevels = 1;
+    bufferDesc.Format = DXGI_FORMAT_UNKNOWN;
+    bufferDesc.SampleDesc.Count = 1;
+    bufferDesc.SampleDesc.Quality = 0;
+    bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    bufferDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    HRESULT hr = device->CreateCommittedResource(
+        &defaultHeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &bufferDesc,
+        D3D12_RESOURCE_STATE_COMMON,
+        nullptr,
+        IID_PPV_ARGS(&mVertexBufferGPU)
+    );
+
+    if (FAILED(hr)) {
+        MessageBox(NULL, L"Failed to create vertex buffer (GPU)", L"Error", MB_OK);
+        return;
+    }
+
+    // 2. Создаем UPLOAD буфер для копирования
+    D3D12_HEAP_PROPERTIES uploadHeapProps = {};
+    uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+    uploadHeapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    uploadHeapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+    hr = device->CreateCommittedResource(
+        &uploadHeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &bufferDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(&mVertexBufferUploader)
+    );
+
+    if (FAILED(hr)) {
+        MessageBox(NULL, L"Failed to create upload buffer", L"Error", MB_OK);
+        return;
+    }
+
+    // 3. Подготавливаем данные для копирования
+    D3D12_SUBRESOURCE_DATA subResourceData = {};
+    subResourceData.pData = cubeVertices;
+    subResourceData.RowPitch = vbByteSize;
+    subResourceData.SlicePitch = vbByteSize;
+
+    // 4. Копируем данные
+    mDirectCmdListAlloc->Reset();
+    mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr);
+
+    // Барьер: COMMON -> COPY_DEST
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    barrier.Transition.pResource = mVertexBufferGPU.Get();
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+    mCommandList->ResourceBarrier(1, &barrier);
+
+    // Копируем данные в upload буфер
+    BYTE* pData = nullptr;
+    hr = mVertexBufferUploader->Map(0, nullptr, reinterpret_cast<void**>(&pData));
+    if (SUCCEEDED(hr)) {
+        memcpy(pData, cubeVertices, vbByteSize);
+        mVertexBufferUploader->Unmap(0, nullptr);
+    }
+
+    // Копируем из upload буфера в GPU буфер
+    mCommandList->CopyResource(mVertexBufferGPU.Get(), mVertexBufferUploader.Get());
+
+    // Барьер: COPY_DEST -> COMMON
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
+
+    mCommandList->ResourceBarrier(1, &barrier);
+
+    // Завершаем команды
+    mCommandList->Close();
+
+    ID3D12CommandList* cmdLists[] = { mCommandList.Get() };
+    mCommandQueue->ExecuteCommandLists(_countof(cmdLists), cmdLists);
+
+    // Ждем завершения копирования
     FlushCommandQueue();
 
-    // Освобождаем буферы
+    // 5. Создаем Vertex Buffer View
+    mVertexBufferView.BufferLocation = mVertexBufferGPU->GetGPUVirtualAddress();
+    mVertexBufferView.SizeInBytes = vbByteSize;
+    mVertexBufferView.StrideInBytes = sizeof(Vertex);
+}
+
+// =========== Метод для создания индексного буфера ===========
+void DirectXApp::BuildIndexBuffer()
+{
+    // УДАЛИ ЭТИ 3 СТРОКИ (они дублируются ниже):
+    // const UINT64 ibByteSize = cubeIndexCount * sizeof(std::uint16_t);
+    // D3D12_HEAP_PROPERTIES defaultHeapProps = {};
+    // defaultHeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    // Размер буфера в байтах (36 индексов * 2 байта) - как в слайде
+    const UINT64 ibByteSize = cubeIndexCount * sizeof(std::uint16_t);
+
+    // 1. Создаем буфер в DEFAULT куче (для GPU)
+    D3D12_HEAP_PROPERTIES defaultHeapProps = {};
+    defaultHeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+    defaultHeapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    defaultHeapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+    D3D12_RESOURCE_DESC bufferDesc = {};
+    bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufferDesc.Alignment = 0;
+    bufferDesc.Width = ibByteSize;
+    bufferDesc.Height = 1;
+    bufferDesc.DepthOrArraySize = 1;
+    bufferDesc.MipLevels = 1;
+    bufferDesc.Format = DXGI_FORMAT_UNKNOWN;
+    bufferDesc.SampleDesc.Count = 1;
+    bufferDesc.SampleDesc.Quality = 0;
+    bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    bufferDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    HRESULT hr = device->CreateCommittedResource(
+        &defaultHeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &bufferDesc,
+        D3D12_RESOURCE_STATE_COMMON,
+        nullptr,
+        IID_PPV_ARGS(&mIndexBufferGPU)
+    );
+
+    if (FAILED(hr)) {
+        MessageBox(NULL, L"Failed to create index buffer (GPU)", L"Error", MB_OK);
+        return;
+    }
+
+    // 2. Создаем UPLOAD буфер для копирования
+    D3D12_HEAP_PROPERTIES uploadHeapProps = {};
+    uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+    uploadHeapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    uploadHeapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+    hr = device->CreateCommittedResource(
+        &uploadHeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &bufferDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(&mIndexBufferUploader)
+    );
+
+    if (FAILED(hr)) {
+        MessageBox(NULL, L"Failed to create index upload buffer", L"Error", MB_OK);
+        return;
+    }
+
+    // 3. Подготавливаем данные для копирования
+    D3D12_SUBRESOURCE_DATA subResourceData = {};
+    subResourceData.pData = cubeIndices;
+    subResourceData.RowPitch = ibByteSize;
+    subResourceData.SlicePitch = ibByteSize;
+
+    // 4. Копируем данные
+    mDirectCmdListAlloc->Reset();
+    mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr);
+
+    // Барьер: COMMON -> COPY_DEST
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    barrier.Transition.pResource = mIndexBufferGPU.Get();
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+    mCommandList->ResourceBarrier(1, &barrier);
+
+    // Копируем данные в upload буфер
+    BYTE* pData = nullptr;
+    hr = mIndexBufferUploader->Map(0, nullptr, reinterpret_cast<void**>(&pData));
+    if (SUCCEEDED(hr)) {
+        memcpy(pData, cubeIndices, ibByteSize);
+        mIndexBufferUploader->Unmap(0, nullptr);
+    }
+
+    // Копируем из upload буфера в GPU буфер
+    mCommandList->CopyResource(mIndexBufferGPU.Get(), mIndexBufferUploader.Get());
+
+    // Барьер: COPY_DEST -> COMMON
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
+
+    mCommandList->ResourceBarrier(1, &barrier);
+
+    // Завершаем команды
+    mCommandList->Close();
+
+    ID3D12CommandList* cmdLists[] = { mCommandList.Get() };
+    mCommandQueue->ExecuteCommandLists(_countof(cmdLists), cmdLists);
+
+    // Ждем завершения копирования
+    FlushCommandQueue();
+
+    // 5. Создаем Index Buffer View (как в слайде)
+    mIndexBufferView.BufferLocation = mIndexBufferGPU->GetGPUVirtualAddress();
+    mIndexBufferView.SizeInBytes = ibByteSize;
+    mIndexBufferView.Format = DXGI_FORMAT_R16_UINT;  // 16-битные индексы как в слайде
+
+    MessageBox(NULL, L"Index buffer created successfully", L"Info", MB_OK);
+}
+
+// ... остальной код БЕЗ ИЗМЕНЕНИЙ (все методы ниже остаются как есть) ...
+
+void DirectXApp::Shutdown() {
+    FlushCommandQueue();
+
     for (int i = 0; i < SwapChainBufferCount; i++) {
         mSwapChainBuffer[i].Reset();
     }
-
-    // Освобождаем буфер глубины
     mDepthStencilBuffer.Reset();
-
-    // Сбрасываем дескрипторные кучи
     mRtvHeap.Reset();
     mDsvHeap.Reset();
-
-    // Сбрасываем SwapChain
     mSwapChain.Reset();
 
-    // Закрываем список команд
+    // Освобождаем буферы
+    mVertexBufferGPU.Reset();
+    mVertexBufferUploader.Reset();
+    mIndexBufferGPU.Reset();      // НОВОЕ
+    mIndexBufferUploader.Reset(); // НОВОЕ
+
     if (mCommandList) {
         mCommandList.Reset();
     }
 
-    // Освобождение ресурсов в обратном порядке
     mFence.Reset();
     mDirectCmdListAlloc.Reset();
     mCommandQueue.Reset();
@@ -58,23 +419,28 @@ bool DirectXApp::CreateDXGIFactory() {
 bool DirectXApp::GetHardwareAdapter() {
     ComPtr<IDXGIFactory6> factory6;
     if (SUCCEEDED(dxgiFactory.As(&factory6))) {
-        for (UINT adapterIndex = 0;
-            SUCCEEDED(factory6->EnumAdapterByGpuPreference(
+        for (UINT adapterIndex = 0; ; ++adapterIndex) {
+            ComPtr<IDXGIAdapter1> currentAdapter;
+            HRESULT hr = factory6->EnumAdapterByGpuPreference(
                 adapterIndex,
                 DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
-                IID_PPV_ARGS(&adapter)));
-                ++adapterIndex) {
+                IID_PPV_ARGS(&currentAdapter));
+
+            if (FAILED(hr)) {
+                break;
+            }
 
             DXGI_ADAPTER_DESC1 desc;
-            adapter->GetDesc1(&desc);
+            currentAdapter->GetDesc1(&desc);
 
             if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
                 continue;
             }
 
-            if (SUCCEEDED(D3D12CreateDevice(adapter.Get(),
+            if (SUCCEEDED(D3D12CreateDevice(currentAdapter.Get(),
                 D3D_FEATURE_LEVEL_12_0,
                 _uuidof(ID3D12Device), nullptr))) {
+                adapter = currentAdapter;
                 return true;
             }
         }
@@ -84,7 +450,8 @@ bool DirectXApp::GetHardwareAdapter() {
 
 bool DirectXApp::CreateD3DDevice() {
     if (!GetHardwareAdapter()) {
-        if (FAILED(dxgiFactory->EnumWarpAdapter(IID_PPV_ARGS(&adapter)))) {
+        HRESULT hr = dxgiFactory->EnumWarpAdapter(IID_PPV_ARGS(&adapter));
+        if (FAILED(hr)) {
             MessageBox(NULL, L"No hardware adapter found and WARP failed", L"Error", MB_OK);
             return false;
         }
@@ -193,7 +560,7 @@ bool DirectXApp::CreateSwapChain() {
     HRESULT hr = dxgiFactory->CreateSwapChain(
         mCommandQueue.Get(),
         &sd,
-        mSwapChain.GetAddressOf()
+        &mSwapChain
     );
 
     if (FAILED(hr)) {
@@ -208,13 +575,6 @@ void DirectXApp::QueryDescriptorSizes() {
     mRtvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     mDsvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
     mCbvSrvUavDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-    std::wstring msg = L"Descriptor sizes:\n";
-    msg += L"RTV: " + std::to_wstring(mRtvDescriptorSize) + L" bytes\n";
-    msg += L"DSV: " + std::to_wstring(mDsvDescriptorSize) + L" bytes\n";
-    msg += L"CBV/SRV/UAV: " + std::to_wstring(mCbvSrvUavDescriptorSize) + L" bytes\n";
-
-    MessageBox(NULL, msg.c_str(), L"Step 6: Descriptor Sizes", MB_OK);
 }
 
 bool DirectXApp::CreateDescriptorHeaps() {
@@ -242,7 +602,6 @@ bool DirectXApp::CreateDescriptorHeaps() {
         return false;
     }
 
-    MessageBox(NULL, L"Descriptor heaps created successfully", L"Step 7: Descriptor Heaps", MB_OK);
     return true;
 }
 
@@ -250,23 +609,23 @@ bool DirectXApp::CreateRenderTargetViews() {
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHeapHandle = mRtvHeap->GetCPUDescriptorHandleForHeapStart();
 
     for (UINT i = 0; i < SwapChainBufferCount; i++) {
-        HRESULT hr = mSwapChain->GetBuffer(i, IID_PPV_ARGS(&mSwapChainBuffer[i]));
+        ComPtr<ID3D12Resource> backBuffer;
+        HRESULT hr = mSwapChain->GetBuffer(i, IID_PPV_ARGS(&backBuffer));
         if (FAILED(hr)) {
             MessageBox(NULL, L"Failed to get swap chain buffer", L"Error", MB_OK);
             return false;
         }
 
+        mSwapChainBuffer[i] = backBuffer;
         device->CreateRenderTargetView(mSwapChainBuffer[i].Get(), nullptr, rtvHeapHandle);
         rtvHeapHandle.ptr += mRtvDescriptorSize;
     }
 
-    MessageBox(NULL, L"Render Target Views created", L"Step 8: RTVs", MB_OK);
     return true;
 }
 
 bool DirectXApp::CreateDepthStencilBuffer() {
-    // Создаем описание ресурса (по скриншоту)
-    D3D12_RESOURCE_DESC depthStencilDesc;
+    D3D12_RESOURCE_DESC depthStencilDesc = {};
     depthStencilDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     depthStencilDesc.Alignment = 0;
     depthStencilDesc.Width = mClientWidth;
@@ -279,13 +638,11 @@ bool DirectXApp::CreateDepthStencilBuffer() {
     depthStencilDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     depthStencilDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
 
-    // Описываем очистку (по скриншоту)
-    D3D12_CLEAR_VALUE optClear;
+    D3D12_CLEAR_VALUE optClear = {};
     optClear.Format = mDepthStencilFormat;
     optClear.DepthStencil.Depth = 1.0f;
     optClear.DepthStencil.Stencil = 0;
 
-    // Создаем свойства кучи (замена CD3DX12_HEAP_PROPERTIES)
     D3D12_HEAP_PROPERTIES heapProps = {};
     heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
     heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
@@ -293,7 +650,6 @@ bool DirectXApp::CreateDepthStencilBuffer() {
     heapProps.CreationNodeMask = 1;
     heapProps.VisibleNodeMask = 1;
 
-    // Создаем ресурс глубины (по скриншоту)
     HRESULT hr = device->CreateCommittedResource(
         &heapProps,
         D3D12_HEAP_FLAG_NONE,
@@ -308,8 +664,7 @@ bool DirectXApp::CreateDepthStencilBuffer() {
         return false;
     }
 
-    // Создаем Depth Stencil View (по скриншоту)
-    D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc;
+    D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
     dsvDesc.Flags = D3D12_DSV_FLAG_NONE;
     dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
     dsvDesc.Format = mDepthStencilFormat;
@@ -321,8 +676,23 @@ bool DirectXApp::CreateDepthStencilBuffer() {
         DepthStencilView()
     );
 
-    MessageBox(NULL, L"Depth/Stencil buffer created", L"Step 9: Depth Buffer", MB_OK);
     return true;
+}
+
+void DirectXApp::CreateViewportAndScissor() {
+    mScreenViewport.TopLeftX = 0.0f;
+    mScreenViewport.TopLeftY = 0.0f;
+    mScreenViewport.Width = static_cast<float>(mClientWidth);
+    mScreenViewport.Height = static_cast<float>(mClientHeight);
+    mScreenViewport.MinDepth = 0.0f;
+    mScreenViewport.MaxDepth = 1.0f;
+
+    mScissorRect = { 0, 0, mClientWidth / 2, mClientHeight / 2 };
+}
+
+void DirectXApp::SetViewportAndScissor() {
+    mCommandList->RSSetViewports(1, &mScreenViewport);
+    mCommandList->RSSetScissorRects(1, &mScissorRect);
 }
 
 bool DirectXApp::Initialize() {
@@ -358,45 +728,156 @@ bool DirectXApp::Initialize() {
     // Шаг 10: Viewport и Scissor
     CreateViewportAndScissor();
 
-    std::wstring successMsg = L"🎉 DirectX 12 initialization COMPLETE! 🎉\n\n";
-    successMsg += L"All 10 steps completed:\n";
-    successMsg += L"1. ✓ DXGI Factory\n";
-    successMsg += L"2. ✓ D3D12 Device\n";
-    successMsg += L"3. ✓ Command Objects\n";
-    successMsg += L"4. ✓ Fence\n";
-    successMsg += L"5. ✓ SwapChain\n";
-    successMsg += L"6. ✓ Descriptor Sizes\n";
-    successMsg += L"7. ✓ Descriptor Heaps\n";
-    successMsg += L"8. ✓ Render Target Views\n";
-    successMsg += L"9. ✓ Depth/Stencil Buffer\n";
-    successMsg += L"10. ✓ Viewport & Scissor\n\n";
-    successMsg += L"Window: " + std::to_wstring(mClientWidth) + L"x" + std::to_wstring(mClientHeight) + L"\n";
-    successMsg += L"Viewport: " + std::to_wstring((int)mScreenViewport.Width) + L"x" + std::to_wstring((int)mScreenViewport.Height) + L"\n";
-    successMsg += L"Scissor: " + std::to_wstring(mScissorRect.right) + L"x" + std::to_wstring(mScissorRect.bottom);
+    // Шаг 11: Input Layout
+    BuildInputLayout();
 
-    MessageBox(NULL, successMsg.c_str(), L"🎯 DirectX 12 Lab - SUCCESS", MB_OK);
+    // Шаг 12: Vertex Buffer
+    BuildVertexBuffer();
+
+    // Шаг 13: Index Buffer (НОВОЕ)
+    BuildIndexBuffer();
+
+    BuildShaders();
+
+    // Шаг 15: Константный буфер (НОВОЕ)
+    BuildConstantBuffer();
+
+    mTimer.Reset();
     return true;
 }
 
-void DirectXApp::CreateViewportAndScissor() {
-    // Создаем Viewport (по скриншоту)
-    mScreenViewport.TopLeftX = 0.0f;
-    mScreenViewport.TopLeftY = 0.0f;
-    mScreenViewport.Width = static_cast<float>(mClientWidth);
-    mScreenViewport.Height = static_cast<float>(mClientHeight);
-    mScreenViewport.MinDepth = 0.0f;
-    mScreenViewport.MaxDepth = 1.0f;
+// ... остальные методы без изменений ...
 
-    // Создаем Scissor (по скриншоту)
-    mScissorRect = { 0, 0, mClientWidth / 2, mClientHeight / 2 };
-
-    MessageBox(NULL, L"Viewport and Scissor created", L"Step 10: Viewport/Scissor", MB_OK);
+bool DirectXApp::InitializeApp() {
+    return Initialize();
 }
 
-void DirectXApp::SetViewportAndScissor() {
-    // Устанавливаем Viewport в командный список (по скриншоту)
-    mCommandList->RSSetViewports(1, &mScreenViewport);
+ID3D12Resource* DirectXApp::CurrentBackBuffer() const {
+    return mSwapChainBuffer[mCurrBackBuffer].Get();
+}
 
-    // Устанавливаем Scissor в командный список (по скриншоту)
-    mCommandList->RSSetScissorRects(1, &mScissorRect);
+D3D12_CPU_DESCRIPTOR_HANDLE DirectXApp::CurrentBackBufferView() const {
+    D3D12_CPU_DESCRIPTOR_HANDLE handle = mRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    handle.ptr += mCurrBackBuffer * mRtvDescriptorSize;
+    return handle;
+}
+
+void DirectXApp::OnResize() {
+    // Будет реализовано позже
+}
+
+int DirectXApp::Run() {
+    MSG msg = { 0 };
+    mTimer.Reset();
+
+    while (msg.message != WM_QUIT) {
+        if (PeekMessage(&msg, 0, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+        else {
+            mTimer.Tick();
+            if (!mAppPaused) {
+                CalculateFrameStats();
+                Update(mTimer);
+                Draw(mTimer);
+            }
+            else {
+                Sleep(100);
+            }
+        }
+    }
+    return (int)msg.wParam;
+}
+
+void DirectXApp::CalculateFrameStats() {
+    mFrameCount++;
+    if ((mTimer.TotalTime() - mTimeElapsed) >= 1.0f) {
+        float fps = (float)mFrameCount;
+        float mspf = 1000.0f / fps;
+
+        std::wstring fpsStr = std::to_wstring(fps);
+        std::wstring mspfStr = std::to_wstring(mspf);
+
+        std::wstring windowText = mMainWndCaption +
+            L" fps: " + fpsStr +
+            L" mspf: " + mspfStr;
+
+        SetWindowText(window.GetHandle(), windowText.c_str());
+
+        mFrameCount = 0;
+        mTimeElapsed += 1.0f;
+    }
+}
+
+void DirectXApp::Update(const Timer& gt) {
+    // Базовая реализация - пустая
+}
+
+void DirectXApp::Draw(const Timer& gt) {
+    // Reuse the memory associated with command recording
+    mDirectCmdListAlloc->Reset();
+
+    // A command list can be reset after it has been added to the command queue
+    mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr);
+
+    // Indicate a state transition on the resource usage
+    D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER_HELPER::Transition(
+        CurrentBackBuffer(),
+        D3D12_RESOURCE_STATE_PRESENT,
+        D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+    mCommandList->ResourceBarrier(1, &barrier);
+
+    // Set the viewport and scissor rect
+    SetViewportAndScissor();
+
+    // Clear the back buffer and depth buffer
+    const float lightSteelBlue[4] = { 0.69f, 0.77f, 0.87f, 1.0f };
+
+    // Получаем дескрипторы
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = CurrentBackBufferView();
+    D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = DepthStencilView();
+
+    mCommandList->ClearRenderTargetView(rtvHandle, lightSteelBlue, 0, nullptr);
+
+    mCommandList->ClearDepthStencilView(
+        dsvHandle,
+        D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL,
+        1.0f,
+        0,
+        0,
+        nullptr);
+
+    // Specify the buffers we are going to render to
+    mCommandList->OMSetRenderTargets(
+        1,
+        &rtvHandle,
+        true,
+        &dsvHandle);
+
+    // TODO: Здесь будет установка вершинного буфера и отрисовка
+    // когда будут следующие слайды про PSO, Root Signature и шейдеры
+
+    // Indicate a state transition back to present
+    barrier = CD3DX12_RESOURCE_BARRIER_HELPER::Transition(
+        CurrentBackBuffer(),
+        D3D12_RESOURCE_STATE_RENDER_TARGET,
+        D3D12_RESOURCE_STATE_PRESENT);
+
+    mCommandList->ResourceBarrier(1, &barrier);
+
+    // Done recording commands
+    mCommandList->Close();
+
+    // Add the command list to the queue for execution
+    ID3D12CommandList* cmdLists[] = { mCommandList.Get() };
+    mCommandQueue->ExecuteCommandLists(_countof(cmdLists), cmdLists);
+
+    // Swap the back and front buffers
+    mSwapChain->Present(0, 0);
+    mCurrBackBuffer = (mCurrBackBuffer + 1) % SwapChainBufferCount;
+
+    // Wait until frame commands are complete
+    FlushCommandQueue();
 }
