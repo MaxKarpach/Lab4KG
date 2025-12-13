@@ -70,28 +70,36 @@ void DirectXApp::BuildConstantBuffer()
 {
     // Создаем UploadBuffer для констант (1 элемент)
     mObjectCB = std::make_unique<UploadBuffer<ObjectConstants>>(
-        device.Get(),  // ID3D12Device
-        1,             // elementCount (1 объект)
-        true           // isConstantBuffer
+        device.Get(),
+        1,
+        true
     );
 
-    // Инициализируем матрицу (единичная матрица)
+    // Инициализируем матрицу
     ObjectConstants objConstants;
-
-    // Создаем простую матрицу проекции (орфографическую)
-    DirectX::XMMATRIX view = DirectX::XMMatrixIdentity();
-    DirectX::XMMATRIX proj = DirectX::XMMatrixOrthographicLH(10.0f, 10.0f, 0.1f, 100.0f);
-    DirectX::XMMATRIX viewProj = view * proj;
-
-    // Копируем в структуру (транспонируем для HLSL)
-    DirectX::XMStoreFloat4x4(&objConstants.mWorldViewProj, XMMatrixTranspose(viewProj));
-
-    // Копируем данные в константный буфер
+    // ... твой код инициализации матрицы ...
     mObjectCB->CopyData(0, objConstants);
+
+    // Создаем CBV (Constant Buffer View)
+    // 1. Вычисляем размер с учетом выравнивания
+    UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
+
+    // 2. Получаем GPU адрес буфера
+    D3D12_GPU_VIRTUAL_ADDRESS cbAddress = mObjectCB->Resource()->GetGPUVirtualAddress();
+
+    // 3. Создаем описание CBV
+    D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
+    cbvDesc.BufferLocation = cbAddress;
+    cbvDesc.SizeInBytes = objCBByteSize;
+
+    // 4. Получаем дескриптор из кучи
+    D3D12_CPU_DESCRIPTOR_HANDLE cbvHandle = mCbvHeap->GetCPUDescriptorHandleForHeapStart();
+
+    // 5. Создаем CBV
+    device->CreateConstantBufferView(&cbvDesc, cbvHandle);
 
     MessageBox(NULL, L"Constant buffer created successfully", L"Info", MB_OK);
 }
-
 // =========== Метод для создания вершинного буфера ===========
 void DirectXApp::BuildVertexBuffer()
 {
@@ -530,7 +538,9 @@ void DirectXApp::QueryDescriptorSizes() {
     mCbvSrvUavDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 }
 
-bool DirectXApp::CreateDescriptorHeaps() {
+bool DirectXApp::CreateDescriptorHeaps()
+{
+    // 1. RTV куча (уже есть)
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc;
     rtvHeapDesc.NumDescriptors = SwapChainBufferCount;
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
@@ -543,6 +553,7 @@ bool DirectXApp::CreateDescriptorHeaps() {
         return false;
     }
 
+    // 2. DSV куча (уже есть)
     D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc;
     dsvHeapDesc.NumDescriptors = 1;
     dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
@@ -552,6 +563,19 @@ bool DirectXApp::CreateDescriptorHeaps() {
     hr = device->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&mDsvHeap));
     if (FAILED(hr)) {
         MessageBox(NULL, L"Failed to create DSV descriptor heap", L"Error", MB_OK);
+        return false;
+    }
+
+    // 3. CBV/SRV/UAV куча (НОВОЕ - для константного буфера)
+    D3D12_DESCRIPTOR_HEAP_DESC cbvHeapDesc;
+    cbvHeapDesc.NumDescriptors = 1;  // Один CBV для ObjectConstants
+    cbvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    cbvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;  // ВАЖНО!
+    cbvHeapDesc.NodeMask = 0;
+
+    hr = device->CreateDescriptorHeap(&cbvHeapDesc, IID_PPV_ARGS(&mCbvHeap));
+    if (FAILED(hr)) {
+        MessageBox(NULL, L"Failed to create CBV descriptor heap", L"Error", MB_OK);
         return false;
     }
 

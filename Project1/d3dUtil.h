@@ -12,4 +12,6 @@ namespace d3dUtil
         const D3D_SHADER_MACRO* defines,
         const std::string& entrypoint,
         const std::string& target);
+
+    UINT CalcConstantBufferByteSize(UINT byteSize);
 }

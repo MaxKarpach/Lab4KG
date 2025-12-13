@@ -95,6 +95,8 @@ private:
     int mFrameCount = 0;
     float mTimeElapsed = 0.0f;
     std::wstring mMainWndCaption = L"DirectX 12 Lab";
+    // В приватные поля, рядом с другими дескрипторными кучами:
+    ComPtr<ID3D12DescriptorHeap> mCbvHeap;  // Для CBV дескрипторов
 
     // =========== Geometry ===========
     std::vector<D3D12_INPUT_ELEMENT_DESC> mInputLayout;

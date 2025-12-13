@@ -39,4 +39,11 @@ namespace d3dUtil
         ThrowIfFailed(hr);
         return byteCode;
     }
+
+    UINT CalcConstantBufferByteSize(UINT byteSize)
+    {
+        // Constant buffers must be a multiple of 256 bytes.
+        // Round up to nearest multiple of 256.
+        return (byteSize + 255) & ~255;
+    }
 }
