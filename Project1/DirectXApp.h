@@ -4,7 +4,7 @@
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <wrl/client.h>
-#include <d3dcompiler.h>  // ДЛЯ КОМПИЛЯЦИИ ШЕЙДЕРОВ
+#include <d3dcompiler.h>
 #include <string>
 #include <vector>
 #include "Window.h"
@@ -14,8 +14,10 @@
 #include "ObjectConstants.h"
 #include <memory>
 #include "MathHelper.h"
+#include <DirectXMath.h>
 
 using Microsoft::WRL::ComPtr;
+using namespace DirectX;
 
 class DirectXApp {
 public:
@@ -39,12 +41,15 @@ public:
     Timer& GetTimer() { return mTimer; }
 
     // Методы для мыши
-    virtual void OnMouseDown(WPARAM btnState, int x, int y) {}
-    virtual void OnMouseUp(WPARAM btnState, int x, int y) {}
-    virtual void OnMouseMove(WPARAM btnState, int x, int y) {}
+    virtual void OnMouseDown(WPARAM btnState, int x, int y);
+    virtual void OnMouseUp(WPARAM btnState, int x, int y);
+    virtual void OnMouseMove(WPARAM btnState, int x, int y);
 
     // Обработка изменения размера
     virtual void OnResize();
+
+    // Обработка клавиатуры
+    virtual void OnKeyDown(WPARAM wParam);
 
 private:
     Window& window;
@@ -70,6 +75,7 @@ private:
     // Дескрипторы
     ComPtr<ID3D12DescriptorHeap> mRtvHeap;
     ComPtr<ID3D12DescriptorHeap> mDsvHeap;
+    ComPtr<ID3D12DescriptorHeap> mCbvHeap;  // Для CBV дескрипторов
     ComPtr<ID3D12Resource> mDepthStencilBuffer;
 
     UINT mRtvDescriptorSize = 0;
@@ -94,9 +100,7 @@ private:
     bool mResizing = false;
     int mFrameCount = 0;
     float mTimeElapsed = 0.0f;
-    std::wstring mMainWndCaption = L"DirectX 12 Lab";
-    // В приватные поля, рядом с другими дескрипторными кучами:
-    ComPtr<ID3D12DescriptorHeap> mCbvHeap;  // Для CBV дескрипторов
+    std::wstring mMainWndCaption = L"DirectX 12 Framework";
 
     // =========== Geometry ===========
     std::vector<D3D12_INPUT_ELEMENT_DESC> mInputLayout;
@@ -114,9 +118,20 @@ private:
     // =========== Constant Buffer ===========
     std::unique_ptr<UploadBuffer<ObjectConstants>> mObjectCB = nullptr;
 
-    // =========== Root Signature и PSO (будем добавлять позже) ===========
+    // =========== Root Signature и PSO ===========
     Microsoft::WRL::ComPtr<ID3D12RootSignature> mRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> mPSO;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> mWireframePSO;  // Второй PSO для проволочного каркаса
+    bool mWireframeMode = false;  // Флаг режима отображения
+
+    // Математика для камеры
+    float mTheta = 1.5f * XM_PI;
+    float mPhi = XM_PIDIV4;
+    float mRadius = 5.0f;
+    POINT mLastMousePos;
+    XMFLOAT4X4 mWorld = MathHelper::Identity4x4();
+    XMFLOAT4X4 mView = MathHelper::Identity4x4();
+    XMFLOAT4X4 mProj = MathHelper::Identity4x4();
 
     // Вспомогательные методы инициализации
     bool CreateDXGIFactory();
@@ -141,6 +156,7 @@ private:
     void BuildConstantBuffer();
     void BuildRootSignature();
     void BuildPSO();
+    void BuildWireframePSO();  // Новый метод для создания проволочного PSO
 
     // Методы для доступа к ресурсам
     ID3D12Resource* CurrentBackBuffer() const;
@@ -148,12 +164,4 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilView() const {
         return mDsvHeap->GetCPUDescriptorHandleForHeapStart();
     }
-
-    float mTheta = 1.5f * XM_PI;
-    float mPhi = XM_PIDIV4;
-    float mRadius = 5.0f;
-    POINT mLastMousePos;
-    XMFLOAT4X4 mWorld = MathHelper::Identity4x4();
-    XMFLOAT4X4 mView = MathHelper::Identity4x4();
-    XMFLOAT4X4 mProj = MathHelper::Identity4x4();
 };
