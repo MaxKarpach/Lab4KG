@@ -188,6 +188,7 @@
     <ClInclude Include="main.h" />
     <ClInclude Include="MathHelper.h" />
     <ClInclude Include="ObjectConstants.h" />
+    <ClInclude Include="ThrowIfFailed.h" />
     <ClInclude Include="Timer.h" />
     <ClInclude Include="UploadBuffer.h" />
     <ClInclude Include="Vertex.h" />
@@ -201,6 +202,7 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="MathHelper.cpp" />
     <ClCompile Include="ObjectConstants.cpp" />
+    <ClCompile Include="ThrowIfFailed.cpp" />
     <ClCompile Include="Timer.cpp" />
     <ClCompile Include="UploadBuffer.cpp" />
     <ClCompile Include="Vertex.cpp" />

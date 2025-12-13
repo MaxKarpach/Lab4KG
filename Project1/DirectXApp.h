@@ -13,6 +13,7 @@
 #include "UploadBuffer.h"
 #include "ObjectConstants.h"
 #include <memory>
+#include "MathHelper.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -145,4 +146,12 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilView() const {
         return mDsvHeap->GetCPUDescriptorHandleForHeapStart();
     }
+
+    float mTheta = 1.5f * XM_PI;
+    float mPhi = XM_PIDIV4;
+    float mRadius = 5.0f;
+    POINT mLastMousePos;
+    XMFLOAT4X4 mWorld = MathHelper::Identity4x4();
+    XMFLOAT4X4 mView = MathHelper::Identity4x4();
+    XMFLOAT4X4 mProj = MathHelper::Identity4x4();
 };

@@ -3,6 +3,7 @@
 #include <dxgi1_6.h>
 #include <d3dcompiler.h>
 #include <string>
+#include "d3dUtil.h"
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -46,69 +47,21 @@ void DirectXApp::BuildInputLayout()
     };
 }
 
-#include "d3dUtil.h"  // Добавьте этот include
-
 void DirectXApp::BuildShaders()
 {
-    UINT compileFlags = 0;
-#ifdef _DEBUG
-    compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-#endif
-
-    ComPtr<ID3DBlob> errorBlob;
-
-    // 1. ПРОБУЕМ БЕЗ ПАПКИ - ПРЯМО РЯДОМ С .EXE
-    HRESULT hr = D3DCompileFromFile(
-        L"shaders.hlsl",  // Без папки Shaders/
+    mvsByteCode = d3dUtil::CompileShader(
+        L"shaders.hlsl",
         nullptr,
-        D3D_COMPILE_STANDARD_FILE_INCLUDE,
         "VS",
-        "vs_5_0",
-        compileFlags,
-        0,
-        &mvsByteCode,
-        &errorBlob
+        "vs_5_0"
     );
 
-    if (FAILED(hr))
-    {
-        // Если не получилось, показываем ошибку
-        std::string errorMsg = "VS Compile Error:\n";
-        if (errorBlob)
-        {
-            errorMsg += (char*)errorBlob->GetBufferPointer();
-        }
-        errorMsg += "\nHRESULT: 0x" + std::to_string(hr);
-
-        MessageBoxA(NULL, errorMsg.c_str(), "Error", MB_OK);
-        return;
-    }
-
-    // 2. ПИКСЕЛЬНЫЙ ШЕЙДЕР (ТОТ ЖЕ ФАЙЛ)
-    hr = D3DCompileFromFile(
-        L"shaders.hlsl",  // Тот же путь
+    mpsByteCode = d3dUtil::CompileShader(
+        L"shaders.hlsl",
         nullptr,
-        D3D_COMPILE_STANDARD_FILE_INCLUDE,
         "PS",
-        "ps_5_0",
-        compileFlags,
-        0,
-        &mpsByteCode,
-        &errorBlob
+        "ps_5_0"
     );
-
-    if (FAILED(hr))
-    {
-        std::string errorMsg = "PS Compile Error:\n";
-        if (errorBlob)
-        {
-            errorMsg += (char*)errorBlob->GetBufferPointer();
-        }
-        errorMsg += "\nHRESULT: 0x" + std::to_string(hr);
-
-        MessageBoxA(NULL, errorMsg.c_str(), "Error", MB_OK);
-        return;
-    }
 
     MessageBox(NULL, L"SUCCESS! Shaders compiled", L"Info", MB_OK);
 }
@@ -698,6 +651,12 @@ void DirectXApp::SetViewportAndScissor() {
 bool DirectXApp::Initialize() {
     MessageBox(NULL, L"Starting DirectX 12 initialization...", L"Info", MB_OK);
 
+    // После BuildConstantBuffer() добавь:
+    XMMATRIX P = XMMatrixPerspectiveFovLH(0.25f * XM_PI,
+        (float)mClientWidth / (float)mClientHeight,
+        1.0f, 1000.0f);
+    XMStoreFloat4x4(&mProj, P);
+
     // Шаг 1: Фабрика DXGI
     if (!CreateDXGIFactory()) return false;
 
@@ -810,8 +769,34 @@ void DirectXApp::CalculateFrameStats() {
     }
 }
 
-void DirectXApp::Update(const Timer& gt) {
-    // Базовая реализация - пустая
+void DirectXApp::Update(const Timer& gt)
+{
+    // Конвертируем сферические координаты в декартовы
+    float x = mRadius * sinf(mPhi) * cosf(mTheta);
+    float y = mRadius * sinf(mPhi) * sinf(mTheta);
+    float z = mRadius * cosf(mPhi);
+
+    // Создаём матрицу вида
+    XMVECTOR pos = XMVectorSet(x, y, z, 1.0f);
+    XMVECTOR target = XMVectorZero();
+    XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+
+    XMMATRIX view = XMMatrixLookAtLH(pos, target, up);
+    XMStoreFloat4x4(&mView, view);
+
+    // Загружаем матрицы
+    XMMATRIX world = XMLoadFloat4x4(&mWorld);
+    XMMATRIX proj = XMLoadFloat4x4(&mProj);
+
+    // Вычисляем итоговую матрицу (world * view * proj)
+    XMMATRIX worldViewProj = world * view * proj;
+
+    // Обновляем константный буфер (транспонируем для HLSL)
+    ObjectConstants objConstants;
+    XMStoreFloat4x4(&objConstants.mWorldViewProj, XMMatrixTranspose(worldViewProj));
+
+    if (mObjectCB)  // Проверяем, что буфер создан
+        mObjectCB->CopyData(0, objConstants);
 }
 
 void DirectXApp::Draw(const Timer& gt) {
