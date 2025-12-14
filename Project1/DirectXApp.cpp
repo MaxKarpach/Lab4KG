@@ -1002,22 +1002,27 @@ void DirectXApp::CalculateFrameStats() {
     }
 }
 
-void DirectXApp::Update(const Timer& gt) {
-    // Обновление камеры и константного буфера
-    float x = mRadius * sinf(mPhi) * cosf(mTheta);
-    float y = mRadius * sinf(mPhi) * sinf(mTheta);
-    float z = mRadius * cosf(mPhi);
-
-    XMVECTOR pos = XMVectorSet(x, y, z, 1.0f);
-    XMVECTOR target = XMVectorZero();
-    XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+void DirectXApp::Update(const Timer& gt)
+{
+    // 1. ПРОСТАЯ КАМЕРА (смотрит на куб сбоку)
+    XMVECTOR pos = XMVectorSet(5.0f, 5.0f, -10.0f, 1.0f);   // Камера сверху-сбоку
+    XMVECTOR target = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);  // Смотрим в центр куба
+    XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);      // Верх = ось Y
 
     XMMATRIX view = XMMatrixLookAtLH(pos, target, up);
     XMStoreFloat4x4(&mView, view);
 
-    XMMATRIX world = XMLoadFloat4x4(&mWorld);
-    XMMATRIX proj = XMLoadFloat4x4(&mProj);
+    // 2. ПЕРСПЕКТИВНАЯ проекция
+    XMMATRIX proj = XMMatrixPerspectiveFovLH(
+        XM_PIDIV4,  // 45°
+        (float)mClientWidth / (float)mClientHeight,
+        0.1f,       // БЛИЖЕ! (0.1 вместо 1.0)
+        100.0f      // ДАЛЬНЯЯ
+    );
+    XMStoreFloat4x4(&mProj, proj);
 
+    // 3. Обновляем константный буфер
+    XMMATRIX world = XMLoadFloat4x4(&mWorld);
     XMMATRIX worldViewProj = world * view * proj;
 
     ObjectConstants objConstants;
