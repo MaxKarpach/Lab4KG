@@ -32,6 +32,7 @@ public:
     virtual bool InitializeApp();
     virtual void Update(const Timer& gt);
     virtual void Draw(const Timer& gt);
+    void BuildObj(const std::string& path);
     virtual void CalculateFrameStats();
 
     // Управление таймером
@@ -132,6 +133,8 @@ private:
     XMFLOAT4X4 mWorld = MathHelper::Identity4x4();
     XMFLOAT4X4 mView = MathHelper::Identity4x4();
     XMFLOAT4X4 mProj = MathHelper::Identity4x4();
+
+    UINT mIndexCount;
 
     // Вспомогательные методы инициализации
     bool CreateDXGIFactory();

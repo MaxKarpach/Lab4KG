@@ -4,6 +4,14 @@
 
 using namespace DirectX;
 
+struct Vertex
+{
+    XMFLOAT3 position;
+    XMFLOAT4 color;
+    XMFLOAT3 normal;
+};
+
+
 // Структуры вершин ИЗ СЛАЙДОВ
 struct Vertex1
 {
@@ -19,8 +27,7 @@ struct Vertex2
     XMFLOAT2 Tex1;     // 32-byte offset
 };
 
-// Для примера со слайда будем использовать Vertex1 (с цветом)
-using Vertex = Vertex1;
+// Для примера со слайда будем использовать Vertex1 (с цветом
 
 // Данные куба ИЗ СЛАЙДА (8 вершин)
 const Vertex cubeVertices[] =

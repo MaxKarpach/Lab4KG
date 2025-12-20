@@ -902,9 +902,10 @@ bool DirectXApp::Initialize() {
     CreateViewportAndScissor();
 
     // Геометрия и ресурсы
-    BuildInputLayout();
-    BuildVertexBuffer();
-    BuildIndexBuffer();
+  //  BuildInputLayout();
+   //BuildVertexBuffer();
+   // BuildIndexBuffer();
+    BuildObj("sponza.obj");
     BuildShaders();
     BuildRootSignature();
     BuildPSO();
